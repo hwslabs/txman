@@ -9,10 +9,11 @@ import org.jooq.UpdatableRecord
 import org.jooq.impl.DAOImpl
 import org.jooq.impl.transactionResult
 
+typealias ConnConfigFun = (Configuration) -> Configuration
 class TxMan(private val configuration: Configuration) {
     private val map = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
 
-    suspend fun <T> wrap(lambda: suspend () -> T): T {
+    suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda: suspend (c: Configuration) -> T = {
             var pushSuccess = false
             val result: T
@@ -28,15 +29,13 @@ class TxMan(private val configuration: Configuration) {
             result
         }
 
-        return dsl().transactionResult(suspendLambda)
+        val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
+
+        return configuration.dsl().transactionResult(suspendLambda)
     }
 
     suspend fun dsl(): DSLContext {
-        return getCurrentConfiguration().dsl()
-    }
-
-    suspend fun configuration(): Configuration {
-        return getCurrentConfiguration()
+        return configuration().dsl()
     }
 
     suspend fun <R : UpdatableRecord<R>, P, T> getDao(
@@ -47,7 +46,7 @@ class TxMan(private val configuration: Configuration) {
         return TxManDAOImpl(table, type, configuration(), idFun)
     }
 
-    private suspend fun getCurrentConfiguration(): Configuration {
+    suspend fun configuration(): Configuration {
         val stack = map[kotlinx.coroutines.currentCoroutineContext()]
         if (stack.isNullOrEmpty()) {
             return configuration
