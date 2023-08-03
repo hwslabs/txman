@@ -22,7 +22,7 @@ plugins {
 }
 
 group = "com.txman"
-version = "0.1.1"
+version = "0.1.2"
 
 tasks.wrapper {
     gradleVersion = "6.9.2"
