@@ -12,20 +12,27 @@ import org.jooq.impl.transactionResult
 typealias ConnConfigFun = (Configuration) -> Configuration
 class TxMan(private val configuration: Configuration) {
     private val map = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
+    private val commitCallbacksMap = ConcurrentHashMap<CoroutineContext, ArrayDeque<suspend () -> Unit>>()
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda: suspend (c: Configuration) -> T = {
             var pushSuccess = false
             val result: T
+            var commitSuccess = false
             try {
                 pushConfiguration(it)
                 pushSuccess = true
                 result = lambda()
+                commitSuccess = true
             } finally {
                 if (pushSuccess) {
                     popConfiguration()
+                    if(commitSuccess) {
+                        executeCommitCallbacks()
+                    }
                 }
             }
+
             result
         }
 
@@ -54,12 +61,20 @@ class TxMan(private val configuration: Configuration) {
         return stack.last()
     }
 
+    suspend fun onCommit(lambda: suspend () -> Unit) {
+        val context = kotlinx.coroutines.currentCoroutineContext()
+        if (!commitCallbacksMap.containsKey(context)) {
+            commitCallbacksMap[context] = ArrayDeque()
+        }
+        commitCallbacksMap[context]?.addLast(lambda)
+    }
+
     private suspend fun pushConfiguration(configuration: Configuration) {
         val context = kotlinx.coroutines.currentCoroutineContext()
         if (!map.containsKey(context)) {
             map[context] = ArrayDeque()
         }
-        map[context]!!.addLast(configuration)
+        map[context]?.addLast(configuration)
     }
 
     private suspend fun popConfiguration() {
@@ -69,6 +84,19 @@ class TxMan(private val configuration: Configuration) {
             return
         }
         stack.removeLast()
+    }
+
+    private suspend fun executeCommitCallbacks() {
+        val context = kotlinx.coroutines.currentCoroutineContext()
+        val callbacks = commitCallbacksMap[context]
+        if (callbacks.isNullOrEmpty()) {
+            return
+        }
+
+        if (map[context].isNullOrEmpty()) {
+            // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
+            callbacks.forEach { it() }
+        }
     }
 }
 

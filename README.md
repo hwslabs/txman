@@ -36,6 +36,65 @@ fun foo() {
 } 
 ```
 
+## onCommit()
+Use `onCommit()` to configure one or more callbacks which will be executed upon successful completion of the transaction.
+
+**A.kt**
+```kotlin
+txMan.wrap {
+    repositoryA.insert(/*...*/)
+    txMan.onCommit {
+        println("Inserted into repositoryA")
+    }
+    foo()
+    println("Wrap completed")
+}
+```
+**B.kt**
+```kotlin
+fun foo() {
+    repositoryB.select(/*...*/)
+    txMan.onCommit {
+        println("Selected from repositoryB")
+    }
+    return
+} 
+```
+
+**Output of executing A.kt**
+```shell
+Wrap completed
+Inserted into repositoryA
+Selected from repositoryB
+```
+
+This even works with nested txman blocks.
+
+**C.kt**
+```kotlin
+txMan.wrap {
+    repositoryA.insert(/*...*/)
+    txMan.onCommit {
+        println("Outer before")
+    }
+    txMan.wrap {
+        repositoryB.select(/*...*/)
+        txMan.onCommit {
+            println("Inner")
+        }
+    }
+    txMan.onCommit {
+        println("Outer after")
+    }
+}
+```
+**Output of executing C.kt**
+```shell
+Outer before
+Inner
+Outer after
+```
+
 ## configuration()
 Returns an `org.jooq.Configuration` object corresponding to the current active transaction
 based on the enclosing `wrap`. If this method is called outside the wrap,
