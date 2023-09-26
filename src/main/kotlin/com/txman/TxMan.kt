@@ -64,15 +64,20 @@ class TxMan(private val configuration: Configuration) {
     suspend fun onCommit(lambda: suspend () -> Unit) {
         val context = kotlinx.coroutines.currentCoroutineContext()
         if (!commitCallbacksMap.containsKey(context)) {
-            commitCallbacksMap[context] = ArrayDeque()
+            // Initializing a dequeue of size 1 as commitCallbacks is a sparsely used feature
+            commitCallbacksMap[context] = ArrayDeque(1)
         }
         commitCallbacksMap[context]?.addLast(lambda)
     }
 
+    data class Stats(val configurationMapSize: Int, val commitCallbacksMapSize: Int)
+    fun statistics() = Stats(map.size, commitCallbacksMap.size)
+
     private suspend fun pushConfiguration(configuration: Configuration) {
         val context = kotlinx.coroutines.currentCoroutineContext()
         if (!map.containsKey(context)) {
-            map[context] = ArrayDeque()
+            // Initializing a dequeue of size 3 based on dev team's usage heuristics
+            map[context] = ArrayDeque(3)
         }
         map[context]?.addLast(configuration)
     }
