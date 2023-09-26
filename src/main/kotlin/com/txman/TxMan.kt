@@ -83,12 +83,16 @@ class TxMan(private val configuration: Configuration) {
     }
 
     private suspend fun popConfiguration() {
-        val stack = map[kotlinx.coroutines.currentCoroutineContext()]
+        val context = kotlinx.coroutines.currentCoroutineContext()
+        val stack = map[context]
         if (stack.isNullOrEmpty()) {
             println("[ERROR]: Trying to pop from a non-existent key. Potential bug!")
             return
+        } else if (stack.size == 1) {
+            map.remove(context)
+        } else {
+            stack.removeLast()
         }
-        stack.removeLast()
     }
 
     private suspend fun executeCommitCallbacks() {
