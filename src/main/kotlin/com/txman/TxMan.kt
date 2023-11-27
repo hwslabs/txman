@@ -11,8 +11,38 @@ import org.jooq.impl.transactionResult
 
 typealias ConnConfigFun = (Configuration) -> Configuration
 class TxMan(private val configuration: Configuration) {
-    private val map = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
+    private val contextMap = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
+    private val stringMap = ConcurrentHashMap<String, ArrayDeque<Configuration>>()
     private val commitCallbacksMap = ConcurrentHashMap<CoroutineContext, ArrayDeque<suspend () -> Unit>>()
+
+    suspend fun <T> execute(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
+        val random = Math.random().toString()
+        val suspendLambda: suspend (c: Configuration) -> T = {
+            var pushSuccess = false
+            val result: T
+            var commitSuccess = false
+            try {
+                pushConfiguration(it, random)
+                pushSuccess = true
+                result = lambda()
+                commitSuccess = true
+            } finally {
+                if (pushSuccess) {
+                    popConfiguration(random)
+                    if (commitSuccess) {
+                        executeCommitCallbacks()
+                    }
+                }
+            }
+
+            result
+        }
+
+    val configuration = configureConnection?.let { configureConnection.invoke(configuration(random)) }
+        ?: configuration(random)
+
+    return configuration.dsl().transactionResult(suspendLambda)
+    }
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda: suspend (c: Configuration) -> T = {
@@ -53,12 +83,20 @@ class TxMan(private val configuration: Configuration) {
         return TxManDAOImpl(table, type, configuration(), idFun)
     }
 
-    suspend fun configuration(): Configuration {
-        val stack = map[kotlinx.coroutines.currentCoroutineContext()]
-        if (stack.isNullOrEmpty()) {
-            return configuration
+    suspend fun configuration(mapKey: String? = null): Configuration {
+        if (mapKey != null) {
+            val stack = stringMap[mapKey]
+            if (stack.isNullOrEmpty()) {
+                return configuration
+            }
+            return stack.last()
+        } else {
+            val stack = contextMap[kotlinx.coroutines.currentCoroutineContext()]
+            if (stack.isNullOrEmpty()) {
+                return configuration
+            }
+            return stack.last()
         }
-        return stack.last()
     }
 
     suspend fun onCommit(lambda: suspend () -> Unit) {
@@ -71,28 +109,48 @@ class TxMan(private val configuration: Configuration) {
     }
 
     data class Stats(val configurationMapSize: Int, val commitCallbacksMapSize: Int)
-    fun statistics() = Stats(map.size, commitCallbacksMap.size)
+    fun statistics() = Stats(contextMap.size, commitCallbacksMap.size)
 
-    private suspend fun pushConfiguration(configuration: Configuration) {
-        val context = kotlinx.coroutines.currentCoroutineContext()
-        if (!map.containsKey(context)) {
-            // Initializing a dequeue of size 3 based on dev team's usage heuristics
-            map[context] = ArrayDeque(3)
+    private suspend fun pushConfiguration(configuration: Configuration, mapKey: String? = null) {
+        if (mapKey != null) {
+            if (!stringMap.containsKey(mapKey)) {
+                // Initializing a dequeue of size 3 based on dev team's usage heuristics
+                stringMap[mapKey] = ArrayDeque(3)
+            }
+            stringMap[mapKey]?.addLast(configuration)
+        } else {
+            val contextKey = kotlinx.coroutines.currentCoroutineContext()
+            if (!contextMap.containsKey(contextKey)) {
+                // Initializing a dequeue of size 3 based on dev team's usage heuristics
+                contextMap[contextKey] = ArrayDeque(3)
+            }
+            contextMap[contextKey]?.addLast(configuration)
         }
-        map[context]?.addLast(configuration)
     }
 
-    private suspend fun popConfiguration() {
+    private suspend fun popConfiguration(mapKey: String? = null) {
+        if (mapKey != null) {
+            val stack = stringMap[mapKey]
+            if (stack.isNullOrEmpty()) {
+                println("[ERROR]: Trying to pop from a non-existent key. Potential bug!")
+                return
+            } else if (stack.size == 1) {
+                stringMap.remove(mapKey)
+            } else {
+                stack.removeLast()
+            }
+        }
+        else {
         val context = kotlinx.coroutines.currentCoroutineContext()
-        val stack = map[context]
+        val stack = contextMap[context]
         if (stack.isNullOrEmpty()) {
             println("[ERROR]: Trying to pop from a non-existent key. Potential bug!")
             return
         } else if (stack.size == 1) {
-            map.remove(context)
+            contextMap.remove(context)
         } else {
             stack.removeLast()
-        }
+        }}
     }
 
     private suspend fun executeCommitCallbacks() {
@@ -102,7 +160,7 @@ class TxMan(private val configuration: Configuration) {
             return
         }
 
-        if (map[context].isNullOrEmpty()) {
+        if (contextMap[context].isNullOrEmpty()) {
             // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
             callbacks.forEach { it() }
         }
