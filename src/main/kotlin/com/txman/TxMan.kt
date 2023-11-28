@@ -14,8 +14,8 @@ class TxMan(private val configuration: Configuration) {
     private val map = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
     private val commitCallbacksMap = ConcurrentHashMap<CoroutineContext, ArrayDeque<suspend () -> Unit>>()
 
-    suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
-        val suspendLambda: suspend (c: Configuration) -> T = {
+    private suspend fun <T> getLambdaFn(lambda: suspend () -> T): suspend (Configuration) -> T {
+        return {
             var pushSuccess = false
             val result: T
             var commitSuccess = false
@@ -35,9 +35,16 @@ class TxMan(private val configuration: Configuration) {
 
             result
         }
+    }
+    suspend fun <T> execute(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
+        val suspendLambda = getLambdaFn(lambda)
+        val configuration = configureConnection?.invoke(configuration) ?: configuration
+        return configuration.dsl().transactionResult(suspendLambda)
+    }
 
+    suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
+        val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
-
         return configuration.dsl().transactionResult(suspendLambda)
     }
 
