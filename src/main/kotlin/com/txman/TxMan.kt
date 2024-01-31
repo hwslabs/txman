@@ -34,16 +34,16 @@ class TxMan(private val configuration: Configuration) {
     suspend fun <T> execute(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.invoke(configuration) ?: configuration
-        val value = configuration.dsl().transactionResult(suspendLambda)
-
-        executeCommitCallbacks()
-        return value
+        return configuration.dsl().transactionResult(suspendLambda)
     }
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
-        return configuration.dsl().transactionResult(suspendLambda)
+        val value = configuration.dsl().transactionResult(suspendLambda)
+
+        executeCommitCallbacks()
+        return value
     }
 
     suspend fun dsl(): DSLContext {
