@@ -18,18 +18,13 @@ class TxMan(private val configuration: Configuration) {
         return {
             var pushSuccess = false
             val result: T
-            var commitSuccess = false
             try {
                 pushConfiguration(it)
                 pushSuccess = true
                 result = lambda()
-                commitSuccess = true
             } finally {
                 if (pushSuccess) {
                     popConfiguration()
-                    if(commitSuccess) {
-                        executeCommitCallbacks()
-                    }
                 }
             }
 
@@ -39,7 +34,10 @@ class TxMan(private val configuration: Configuration) {
     suspend fun <T> execute(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.invoke(configuration) ?: configuration
-        return configuration.dsl().transactionResult(suspendLambda)
+        val value = configuration.dsl().transactionResult(suspendLambda)
+
+        executeCommitCallbacks()
+        return value
     }
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
@@ -112,6 +110,7 @@ class TxMan(private val configuration: Configuration) {
         if (map[context].isNullOrEmpty()) {
             // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
             callbacks.forEach { it() }
+            commitCallbacksMap.remove(context)
         }
     }
 }
