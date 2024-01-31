@@ -42,16 +42,15 @@ class TxMan(private val configuration: Configuration) {
         val context = kotlinx.coroutines.currentCoroutineContext()
         val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
         val value = try {
-            val value = configuration.dsl().transactionResult(suspendLambda)
+            val response = configuration.dsl().transactionResult(suspendLambda)
             executeCommitCallbacks()
-            value
+            response
         } finally {
             if (map[context].isNullOrEmpty()) {
-                // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
+                // This implies a COMMIT and not a SAVEPOINT. Hence, removing callbacks
                 commitCallbacksMap.remove(context)
             }
         }
-
         return value
     }
 
