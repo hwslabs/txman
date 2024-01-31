@@ -8,11 +8,13 @@ import org.jooq.Table
 import org.jooq.UpdatableRecord
 import org.jooq.impl.DAOImpl
 import org.jooq.impl.transactionResult
+import java.util.LinkedList
 
 typealias ConnConfigFun = (Configuration) -> Configuration
 class TxMan(private val configuration: Configuration) {
     private val map = ConcurrentHashMap<CoroutineContext, ArrayDeque<Configuration>>()
-    private val commitCallbacksMap = ConcurrentHashMap<CoroutineContext, ArrayDeque<suspend () -> Unit>>()
+    private val commitCallbacksMap = ConcurrentHashMap<CoroutineContext, LinkedList<suspend () -> Unit>>()
+    private val commitCallbackPointerStack = ConcurrentHashMap<CoroutineContext, ArrayDeque<Int>>()
 
     private suspend fun <T> getLambdaFn(lambda: suspend () -> T): suspend (Configuration) -> T {
         return {
@@ -27,9 +29,6 @@ class TxMan(private val configuration: Configuration) {
             } finally {
                 if (pushSuccess) {
                     popConfiguration()
-                    if(commitSuccess) {
-                        executeCommitCallbacks()
-                    }
                 }
             }
 
@@ -40,12 +39,27 @@ class TxMan(private val configuration: Configuration) {
         val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.invoke(configuration) ?: configuration
         return configuration.dsl().transactionResult(suspendLambda)
+        // TODO: think what to do when error happens while commiting execute commit collabacks will be called even if rollback happens
+        // think three level txman how save poin will work
     }
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda = getLambdaFn(lambda)
         val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
-        return configuration.dsl().transactionResult(suspendLambda)
+        val value = try {
+            configuration.dsl().transactionResult(suspendLambda)
+        } catch (e: Exception) {
+            val context = kotlinx.coroutines.currentCoroutineContext()
+            var lastCount = commitCallbackPointerStack[context]?.removeLastOrNull()
+            while(lastCount != null && lastCount > 0) {
+                executeCommitCallbacks()
+                lastCount--
+            }
+            throw e
+        }
+
+        executeCommitCallbacks()
+        return value
     }
 
     suspend fun dsl(): DSLContext {
@@ -72,9 +86,11 @@ class TxMan(private val configuration: Configuration) {
         val context = kotlinx.coroutines.currentCoroutineContext()
         if (!commitCallbacksMap.containsKey(context)) {
             // Initializing a dequeue of size 1 as commitCallbacks is a sparsely used feature
-            commitCallbacksMap[context] = ArrayDeque(1)
+            commitCallbacksMap[context] = LinkedList()
         }
         commitCallbacksMap[context]?.addLast(lambda)
+        val lastCount = commitCallbackPointerStack[context]?.removeLastOrNull()
+        commitCallbackPointerStack[context]?.addLast(lastCount?.plus(1) ?: 1)
     }
 
     data class Stats(val configurationMapSize: Int, val commitCallbacksMapSize: Int)
@@ -85,8 +101,10 @@ class TxMan(private val configuration: Configuration) {
         if (!map.containsKey(context)) {
             // Initializing a dequeue of size 3 based on dev team's usage heuristics
             map[context] = ArrayDeque(3)
+            commitCallbackPointerStack[context] = ArrayDeque(3)
         }
         map[context]?.addLast(configuration)
+        commitCallbackPointerStack[context]?.addLast(0)
     }
 
     private suspend fun popConfiguration() {
