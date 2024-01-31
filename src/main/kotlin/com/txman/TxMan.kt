@@ -39,10 +39,19 @@ class TxMan(private val configuration: Configuration) {
 
     suspend fun <T> wrap(configureConnection: ConnConfigFun? = null, lambda: suspend () -> T): T {
         val suspendLambda = getLambdaFn(lambda)
+        val context = kotlinx.coroutines.currentCoroutineContext()
         val configuration = configureConnection?.let { configureConnection.invoke(configuration()) } ?: configuration()
-        val value = configuration.dsl().transactionResult(suspendLambda)
+        val value = try {
+            val value = configuration.dsl().transactionResult(suspendLambda)
+            executeCommitCallbacks()
+            value
+        } finally {
+            if (map[context].isNullOrEmpty()) {
+                // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
+                commitCallbacksMap.remove(context)
+            }
+        }
 
-        executeCommitCallbacks()
         return value
     }
 
@@ -110,7 +119,6 @@ class TxMan(private val configuration: Configuration) {
         if (map[context].isNullOrEmpty()) {
             // This implies a COMMIT and not a SAVEPOINT. Hence, executing callbacks.
             callbacks.forEach { it() }
-            commitCallbacksMap.remove(context)
         }
     }
 }
